@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prismaClient } from "@/lib/db";
 import { getServerSession } from "next-auth";
+import { YT_REGEX } from "@/lib/util";
 const API_KEY = process.env.YOUTUBE_API_KEY;
-const YT_REGEX = /^(?:https?:\/\/)?(?:www\.)?(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|v\/))([A-Za-z0-9_-]{11})(?:[?&][^\s]*)?$/;
 
 const CreateStreamSchema = z.object({
     url: z.string(),
@@ -116,6 +116,12 @@ export async function POST(req: NextRequest) {
 
 
 }
+
+ const DeleteSchema = z.object({
+    streamId: z.string(),
+})
+
+
 export async function GET(req: NextRequest) {
     const creatorId = req.nextUrl.searchParams.get("creatorId");
 
@@ -141,4 +147,48 @@ export async function GET(req: NextRequest) {
             message: "Error fetching streams",
         }, { status: 500 });
     }
+}
+
+
+export async function DELETE(req: NextRequest) {
+  const session = await getServerSession();
+  if (!session) {
+    return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+  }
+
+  const user = await prismaClient.user.findUnique({
+    where: {
+      email: session.user?.email ?? "",
+    },
+  });
+
+  if (!user) {
+    return NextResponse.json({ message: "Invalid user" }, { status: 401 });
+  }
+
+  try {
+    const data = DeleteSchema.parse(await req.json());
+    console.log(data)
+
+    const upvotes = await prismaClient.upvotes.deleteMany({
+  where: {
+    streamId: data.streamId,
+  },
+});
+    // safer: deleteMany in case id+userId is not unique
+    await prismaClient.stream.deleteMany({
+      where: {
+        id: data.streamId,
+        userId: user.id,
+      },
+    });
+
+    return NextResponse.json({ message: "Stream deleted successfully" });
+  } catch (err) {
+    console.error("Delete error:", err);
+    return NextResponse.json(
+      { message: "Invalid request data at delete" },
+      { status: 411 }
+    );
+  }
 }

@@ -1,10 +1,11 @@
 "use client";
 import React, { useState, useMemo, useEffect } from 'react';
+import { YT_REGEX } from '@/lib/util';
 
 interface Video {
   id: string;
   title: string;
-  extractorId: string;
+  extractedId: string;
   thumbnail: string;
   upvotes: number;
   haveVoted: boolean;
@@ -13,6 +14,8 @@ interface Video {
   userId: string;
   url: string;
 }
+
+const creatorId ="1af64934-66de-4d1b-93ae-71d33168d714"
 
 // --- HELPER ICONS ---
 const PlayIcon = () => (
@@ -47,6 +50,7 @@ function App() {
   const [inputValue, setInputValue] = useState('');
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [loading,setLoading] = useState(false)
 
   // --- DERIVED STATE ---
   const sortedQueue = useMemo(() => {
@@ -55,19 +59,14 @@ function App() {
 
 
   const refreshStreams = async () => {
-
-    const response = await fetch("/api/streams/my");
-
-    const data = await response.json();
-
-    setVideoQueue(data.streams || []);
-
-    console.log(data.streams);
+const response = await fetch("/api/streams/my");
+let data = [];
+if (response.headers.get("content-type")?.includes("application/json")) {
+  data = await response.json();
+}
+setVideoQueue(data.streams || []);
 
   }
-
-
-
   useEffect(() => {
     refreshStreams()
     // const interval = setInterval(() => {
@@ -76,17 +75,15 @@ function App() {
     // return () => clearInterval(interval);
   }, []);
 
-
-  // --- UTILITY FUNCTIONS ---
   const getYouTubeId = (url: string) => {
-    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
-    const match = url.match(regExp);
-    return (match && match[2].length === 11) ? match[2] : null;
-  };
+  const match = url.match(YT_REGEX);
+  return match && match[1].length === 11 ? match[1] : null;
+};
+
 
   // --- EVENT HANDLERS ---
   const handleShare = () => {
-    const url = window.location.href;
+    const url = `${window.location.hostname}/creatorId/${creatorId}`;
     const textArea = document.createElement("textarea");
     textArea.value = url;
     document.body.appendChild(textArea);
@@ -106,40 +103,29 @@ function App() {
     setError('');
     const videoId = getYouTubeId(inputValue);
     if (videoId) {
-      if (videoQueue.some(v => v.extractorId === videoId)) {
+      setLoading(true)
+      if (videoQueue.some(v => v.extractedId === videoId)) {
         setError('This song is already in the queue.');
         return;
       }
-
-      const newSong: Video = {
-        id: `vid${Date.now()}`, // Simple unique ID
-        title: `New Song: ${videoId}`,
-        extractorId: videoId,
-        thumbnail: `https://i3.ytimg.com/vi/${videoId}/default.jpg`,
-        upvotes: 1,
-        haveVoted: true,
-        active: false,
-        type: 'youtube',
-        userId: 'user-id-placeholder',
-        url: inputValue
-      };
-      setVideoQueue(prevQueue => [...prevQueue, newSong]);
-      
       const response = await  fetch('/api/streams', {
         method: 'POST',
         headers: {  
           'Content-Type': 'application/json',
         },  
         body: JSON.stringify({
-          url: newSong.url,
+          url: inputValue,
         }),  
       });
       console.log(response);
 
+       refreshStreams()
       setInputValue('');
+      setLoading(false)
     } else {
       setError('Invalid YouTube URL. Please check the link and try again.');
     }
+
   };
 
   const handleVote = async (id: string) => {
@@ -177,12 +163,22 @@ function App() {
 
   };
 
-  const handlePlayNext = () => {
+  const handlePlayNext = async() => {
     if (sortedQueue.length > 0) {
       const nextVideo = sortedQueue[0];
-      setCurrentVideoId(nextVideo.extractorId);
+      setCurrentVideoId(nextVideo.extractedId);
       setVideoQueue(prevQueue => prevQueue.filter(v => v.id !== nextVideo.id));
-    }
+      const res = await fetch("/api/streams",{
+        method:"DELETE",
+        body:JSON.stringify({
+          streamId : nextVideo.id
+        })
+      }) 
+      const data :{message :string} = await  res.json()
+      alert(data.message)
+      refreshStreams()
+  }
+
   };
 
   // --- RENDER ---
@@ -212,8 +208,8 @@ function App() {
               placeholder="Paste YouTube link here"
               className="w-full bg-gray-800 border border-gray-700 rounded-lg p-3 focus:ring-2 focus:ring-purple-500 focus:outline-none transition"
             />
-            <button onClick={handleAddSong} className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-5 rounded-lg transition duration-300">
-              Add to Queue
+            <button onClick={handleAddSong} disabled={loading} className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-5 rounded-lg transition duration-300">
+              {loading ? "loading....." :"Add to Queue"}
             </button>
             {error && <p className="text-red-500 text-sm mt-1">{error}</p>}
           </div>
@@ -247,7 +243,7 @@ function App() {
           <div>
             <h2 className="text-2xl font-bold mb-4">Upcoming Songs</h2>
             <div className="space-y-3">
-              {sortedQueue.length > 0 ? sortedQueue.map((video) => (
+              {sortedQueue.length > 0 || loading ? sortedQueue.map((video) => (
                 <div key={video.id} className="flex items-center gap-4 bg-gray-900 p-3 rounded-lg border border-gray-800">
                   <img src={video.thumbnail} alt={video.title} className="w-24 h-16 object-cover rounded" />
                   <div className="flex-grow overflow-hidden">
