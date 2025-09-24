@@ -100,21 +100,6 @@ function App() {
                 </div>
             </section>
 
-            {/* CTA Section */}
-            <section id="cta" className="py-20 bg-cyan-800">
-                <div className="container mx-auto px-6 text-center">
-                    <h3 className="text-4xl font-bold mb-4 text-white">Ready to Revolutionize Your Stream?</h3>
-                    <p className="text-cyan-200 max-w-2xl mx-auto mb-8">
-                        Join our community of forward-thinking creators and give your fans the power to shape the sound of your stream.
-                    </p>
-                    <div className="flex justify-center">
-                        <input type="email" placeholder="Enter your email to get started" className="w-full max-w-sm p-4 rounded-l-full text-gray-800 focus-outline-none" />
-                        <button className="bg-gray-900 hover:bg-black text-white font-bold py-4 px-8 rounded-r-full transition duration-300">
-                            Sign Up
-                        </button>
-                    </div>
-                </div>
-            </section>
 
             {/* Footer */}
             <footer className="bg-gray-900 py-10">

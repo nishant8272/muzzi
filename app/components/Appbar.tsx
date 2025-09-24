@@ -4,26 +4,6 @@ import { signIn, signOut, useSession } from "next-auth/react"
 
 export function Appbar() {
   const {  status } = useSession()
-  const signOutHandler = async () => {
-
-    const response = await fetch("/api/me", {
-      method: "DELETE",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    });
-    if (!response.ok) {
-      alert("Failed to delete user");
-      return;
-    } else {  
-    signOut({
-      callbackUrl: "/dashboard"
-    })
-    alert("User deleted successfully")
-  }
-
-
-  }
 
 
   return (
@@ -41,7 +21,7 @@ export function Appbar() {
 
             {status === "authenticated" && (
               <button
-                onClick={() => signOutHandler()}
+                onClick={() => signOut()}
                 className="text-white font-semibold hover:underline"
               >
                 Logout

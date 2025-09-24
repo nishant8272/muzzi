@@ -22,36 +22,36 @@ export async function GET(request: NextRequest) {
 }
 
 
-export async function DELETE(request: NextRequest) {
-    const session = await getServerSession();
-    if (!session?.user?.email) {
-        return new Response("Unauthorized", { status: 401 });
-    }   
-    const user = await prismaClient.user.findFirst({
-        where: {
-            email : session.user.email ?? ""
-        }
-    })
-    if (!user) {
-        return new Response("User not found", { status: 404 });
-    }
+// export async function DELETE(request: NextRequest) {
+//     const session = await getServerSession();
+//     if (!session?.user?.email) {
+//         return new Response("Unauthorized", { status: 401 });
+//     }   
+//     const user = await prismaClient.user.findFirst({
+//         where: {
+//             email : session.user.email ?? ""
+//         }
+//     })
+//     if (!user) {
+//         return new Response("User not found", { status: 404 });
+//     }
 
-    await prismaClient.upvotes.deleteMany({
-        where: {
-            userId: user.id
-        }
-    })  
-    await prismaClient.stream.deleteMany({
-        where: {
-            userId: user.id
-        }
-    })
-    await prismaClient.user.delete({
-        where: {
-            id: user.id
-        }
-    })
-    return NextResponse.json({
-        message: "User deleted successfully"
-    })
-}   
+//     await prismaClient.upvotes.deleteMany({
+//         where: {
+//             userId: user.id
+//         }
+//     })  
+//     await prismaClient.stream.deleteMany({
+//         where: {
+//             userId: user.id
+//         }
+//     })
+//     await prismaClient.user.delete({
+//         where: {
+//             id: user.id
+//         }
+//     })
+//     return NextResponse.json({
+//         message: "User deleted successfully"
+//     })
+// }   
