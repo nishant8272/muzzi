@@ -77,8 +77,8 @@ function App() {
   // Handle unauthenticated state
   if (status === "unauthenticated") {
     return (
-      <div className="flex items-center justify-center h-screen bg-purple-600">
-        <div>
+      <div className="flex items-center justify-center h-screen bg-[#0d1320]">
+        <div className="flex flex-col items-center justify-center">
           <Loader />
           <div>
             <h1 className="text-3xl font-bold text-white text-center">Muzzi, please sign in to continue.</h1>
@@ -93,7 +93,7 @@ function App() {
   if (error) {
     return (
       <div className="flex items-center justify-center h-screen bg-[#0d1320]">
-        <div>
+        <div className="flex flex-col items-center justify-center">
           <Loader />
           <div>
             <h1 className="text-3xl font-bold text-white text-center">An error occurred: {error}</h1>
@@ -112,7 +112,7 @@ function App() {
   return (
 
     <div className="flex items-center justify-center h-screen bg-[#0d1320]">
-      <div>
+      <div className="flex flex-col items-center justify-center">
         <Loader/>
         <div>
           <h1 className="text-3xl font-bold text-white text-center">Unable to fetch creator ID. Please try again later.</h1>
