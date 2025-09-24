@@ -122,33 +122,35 @@ export async function POST(req: NextRequest) {
 })
 
 
-export async function GET(req: NextRequest) {
-    const creatorId = req.nextUrl.searchParams.get("creatorId");
-
+export async function GET(request: NextRequest) {
+    const creatorId = request.nextUrl.searchParams.get("creatorId");
     if (!creatorId) {
-        return NextResponse.json({
-            message: "Missing creatorId in query params",
-        }, { status: 400 });
+        return new Response("Bad Request: Missing creatorId", { status: 400 });
     }
 
-    try {
-        const streams = await prismaClient.stream.findMany({
-            where: { userId: creatorId }
-        });
+       const streams = await prismaClient.stream.findMany({
+                where: { userId: creatorId }
+                ,
+                include :{
+                    _count:{
+                        select:{
+                            upvotes : true,
+                        }
+                    },
+                    upvotes : {
+                        where : {
+                            userId : creatorId
+                        }
+                    }
+                }
+            }
+        );
+            return NextResponse.json({
+               streams :streams.map(({_count, ...stream}) => ({...stream, upvotes : _count.upvotes,haveVoted : stream.upvotes.length ? true : false
+               })),
+            }, { status: 200 });
 
-        return NextResponse.json({
-            message: "Streams fetched successfully",
-            streams : streams
-        }, { status: 200 });
-
-    } catch (err) {
-        console.error("Error fetching streams:", err);
-        return NextResponse.json({
-            message: "Error fetching streams",
-        }, { status: 500 });
-    }
-}
-
+}       
 
 export async function DELETE(req: NextRequest) {
   const session = await getServerSession();
@@ -170,7 +172,7 @@ export async function DELETE(req: NextRequest) {
     const data = DeleteSchema.parse(await req.json());
     console.log(data)
 
-    const upvotes = await prismaClient.upvotes.deleteMany({
+     await prismaClient.upvotes.deleteMany({
   where: {
     streamId: data.streamId,
   },
