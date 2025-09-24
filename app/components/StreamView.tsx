@@ -77,10 +77,10 @@ function StreamView({ creatorId, share }: { creatorId: string, share?: boolean }
     }
     useEffect(() => {
         refreshStreams()
-        // const interval = setInterval(() => {
-        //   refreshStreams();
-        // }, 10000);
-        // return () => clearInterval(interval);
+        const interval = setInterval(() => {
+          refreshStreams();
+        }, 10000);
+        return () => clearInterval(interval);
     }, []);
 
     const getYouTubeId = (url: string) => {
