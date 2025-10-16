@@ -15,6 +15,13 @@ const handler = NextAuth({
     async signIn(params) {
       if (!params.user?.email) return false
       
+      const existingUser = await prismaClient.user.findUnique({
+        where: {
+          email: params.user.email
+        }
+      })
+      
+      if (existingUser) return true
       await prismaClient.user.create({
         data: {
           email: params.user.email ?? "",

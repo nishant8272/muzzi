@@ -7,3 +7,4 @@ export function Provider({children}:{children:React.ReactNode}) {
         </SessionProvider>
     )
 }
+ 

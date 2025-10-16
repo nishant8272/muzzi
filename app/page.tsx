@@ -2,6 +2,7 @@
 import React from 'react';
 import { Appbar } from './components/Appbar';
 import { Redirect } from './components/Redirect';
+import { signIn } from 'next-auth/react';
 
 
 function App() {
@@ -35,7 +36,9 @@ function App() {
                     <p className="text-lg md:text-xl text-gray-300 max-w-3xl mb-8">
                         Stop guessing what your audience wants to hear. With Muzzi, your fans vote on the music, creating an interactive live experience that keeps them coming back for more.
                     </p>
-                    <a href="#cta" className="bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-4 px-10 rounded-full text-lg transition duration-300 transform hover:scale-105 glow-effect">
+                    <a href="#cta" className="bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-4 px-10 rounded-full text-lg transition duration-300 transform hover:scale-105 glow-effect" onClick={()=>{
+                         signIn()
+                    }}>
                         Start Your Interactive Stream
                     </a>
                 </div>
