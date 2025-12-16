@@ -279,7 +279,7 @@ function StreamView({ creatorId, share }: { creatorId: string, share?: boolean }
                                                 className={`flex items-center gap-1 transition ${video.haveVoted ? 'text-purple-400 hover:text-white' : 'hover:text-white'}`}
                                             >
                                                 {video.haveVoted ? <ThumbsDownIcon /> : <ThumbsUpIcon />}
-                                                <span>{video.upvotes}</span>
+                                                <span className="ml-3 "> votes count :{video.upvotes}</span>
                                             </button>
                                         </div>
                                     </div>
