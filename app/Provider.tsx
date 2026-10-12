@@ -1,10 +1,14 @@
-"use client"
+"use client";
+
 import { SessionProvider } from "next-auth/react";
-export function Provider({children}:{children:React.ReactNode}) {
-    return (
-        <SessionProvider>
-            {children}
-        </SessionProvider>
-    )
+import { ThemeProvider } from "./components/ThemeProvider";
+
+export function Provider({ children }: { children: React.ReactNode }) {
+  return (
+    <SessionProvider refetchOnWindowFocus={false}>
+      <ThemeProvider>
+        {children}
+      </ThemeProvider>
+    </SessionProvider>
+  );
 }
- 

@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { z } from "zod";
 import { prismaClient } from "@/lib/db";
+import { broadcastWs } from "@/lib/socket";
 
 const UpvoteSchema = z.object( {
     streamId :z.string(),
@@ -29,7 +30,6 @@ export async function DELETE(req:NextRequest){
             status : 401
         })
     }
-    console.log(user)
     try{
         const data = UpvoteSchema.parse(await req.json())
         await prismaClient.upvotes.delete({
@@ -40,8 +40,24 @@ export async function DELETE(req:NextRequest){
                 }
             }
         })
+
+        const stream = await prismaClient.stream.findUnique({
+            where: { id: data.streamId },
+            include: {
+                _count: { select: { upvotes: true } },
+            },
+        });
+
+        if (stream) {
+            broadcastWs(stream.userId, {
+                type: "VOTE_UPDATE",
+                streamId: data.streamId,
+                upvotes: stream._count.upvotes,
+            }).catch(() => {});
+        }
+
         return NextResponse.json({
-            message : "Upvote created successfully",
+            message : "Upvote removed successfully",
         })
     }
     catch(err){

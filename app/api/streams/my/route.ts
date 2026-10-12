@@ -17,28 +17,53 @@ export async function GET(request: NextRequest) {
         return new Response("User not found", { status: 404 });
     }
 
-       const streams = await prismaClient.stream.findMany({
-                where: { userId: user.id }
-                ,
-                include :{
-                    _count:{
-                        select:{
-                            upvotes : true,
-                        }
+        const [streams, currentStream] = await Promise.all([
+            prismaClient.stream.findMany({
+                where: { userId: user.id, active: true },
+                include: {
+                    _count: {
+                        select: {
+                            upvotes: true,
+                        },
                     },
-                    upvotes : {
-                        where : {
-                            userId : user.id
-                        }
-                    }
-                }
-            }
-        );
-    
-            return NextResponse.json({
-               streams :streams.map(({_count, ...stream}) => ({...stream, upvotes : _count.upvotes
-                ,haveVoted : stream.upvotes.length ? true : false
-               })),
-            }, { status: 200 });
+                    upvotes: {
+                        where: {
+                            userId: user.id,
+                        },
+                    },
+                },
+            }),
+            prismaClient.stream.findFirst({
+                where: { userId: user.id, active: false },
+            }),
+        ]);
+
+        return NextResponse.json({
+            streams: streams.map(({ _count, upvotes, ...stream }) => ({
+                ...stream,
+                upvotes: _count.upvotes,
+                haveVoted: Array.isArray(upvotes) && upvotes.length > 0,
+            })),
+            currentStream: currentStream ? {
+                id: currentStream.id,
+                title: currentStream.title,
+                extractedId: currentStream.extractedId,
+                url: currentStream.url,
+                thumbnail: currentStream.thumbnail,
+                type: currentStream.type,
+                userId: currentStream.userId,
+                active: currentStream.active,
+            } : null,
+            activeStream: currentStream ? {
+                id: currentStream.id,
+                title: currentStream.title,
+                extractedId: currentStream.extractedId,
+                url: currentStream.url,
+                thumbnail: currentStream.thumbnail,
+                type: currentStream.type,
+                userId: currentStream.userId,
+                active: currentStream.active,
+            } : null,
+        }, { status: 200 });
 
 }       

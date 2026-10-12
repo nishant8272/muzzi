@@ -3,13 +3,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { z } from "zod";
 import { prismaClient } from "@/lib/db";
+import { broadcastWs } from "@/lib/socket";
 
 const UpvoteSchema = z.object( {
     streamId :z.string(),
 })
 
 export async function POST(req:NextRequest){
-    console.log("object")
     const session = await getServerSession();
     if(!session){
         return NextResponse.json({
@@ -38,6 +38,22 @@ export async function POST(req:NextRequest){
                 streamId : data.streamId,
             }
         })
+
+        const stream = await prismaClient.stream.findUnique({
+            where: { id: data.streamId },
+            include: {
+                _count: { select: { upvotes: true } },
+            },
+        });
+
+        if (stream) {
+            broadcastWs(stream.userId, {
+                type: "VOTE_UPDATE",
+                streamId: data.streamId,
+                upvotes: stream._count.upvotes,
+            }).catch(() => {});
+        }
+
         return NextResponse.json({
             message : "Upvote created successfully",
         })
