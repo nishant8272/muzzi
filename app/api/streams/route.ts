@@ -100,6 +100,23 @@ export async function POST(req: NextRequest) {
                 message: "Playback on other websites has been disabled by the video owner. Please choose another track.",
             }, { status: 400 });
         }
+
+        // Queue Guard: Max track duration cap (12 minutes) to prevent troll loop videos
+        const rawDuration = (video as any).contentDetails?.duration;
+        if (rawDuration) {
+            const match = rawDuration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+            if (match) {
+                const hours = parseInt(match[1] || "0", 10);
+                const minutes = parseInt(match[2] || "0", 10);
+                const seconds = parseInt(match[3] || "0", 10);
+                const totalSec = hours * 3600 + minutes * 60 + seconds;
+                if (totalSec > 720) { // 12 minutes cap
+                    return NextResponse.json({
+                        message: `Track is too long (${Math.round(totalSec / 60)} mins). The stream queue limit is 12 minutes per track.`,
+                    }, { status: 400 });
+                }
+            }
+        }
         
         const user = await prismaClient.user.findFirst({
             where: {
@@ -195,6 +212,9 @@ export async function GET(request: NextRequest) {
             where: {
                 userId: creatorId,
                 active: false,
+            },
+            orderBy: {
+                id: "desc",
             },
         }),
     ]);

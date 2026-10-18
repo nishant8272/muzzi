@@ -202,6 +202,8 @@ wss.on("connection", (ws, req) => {
         broadcastToRoom(data.creatorId, { type: "STAGE_STOPPED" }, ws);
       }
 
+
+
       // Client leaves a room
       if (data.type === "LEAVE_ROOM" && currentRoom) {
         if (rooms.has(currentRoom)) {

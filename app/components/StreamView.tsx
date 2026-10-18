@@ -4,6 +4,7 @@ import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { YT_REGEX, extractYouTubeId } from "@/lib/util";
 import { Appbar } from "./Appbar";
 import Link from "next/link";
+import QRCode from "qrcode";
 
 export interface Video {
   id: string;
@@ -127,22 +128,33 @@ export default function StreamView({
   const [playerKey, setPlayerKey] = useState(0);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const [wsConnected, setWsConnected] = useState(false);
-  const [activeViewers, setActiveViewers] = useState<number | null>(null);
-
   // Broadcaster & Audience state
   const [broadcasterState, setBroadcasterState] = useState<"PLAYING" | "PAUSED">("PLAYING");
   const [creatorIsPlaying, setCreatorIsPlaying] = useState(true);
   const [isYTReady, setIsYTReady] = useState(false);
 
+  // Party Lounge Fullscreen Mode & QR Code
+  const [isPartyMode, setIsPartyMode] = useState(false);
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string>("");
+  const [copiedOverlay, setCopiedOverlay] = useState(false);
+
+  // Built-in YouTube Search
+  const [searchTab, setSearchTab] = useState<"search" | "url">("search");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<
+    Array<{ id: string; title: string; channelTitle: string; thumbnail: string; url: string }>
+  >([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+
+  // Session Track History
+  const [sessionHistory, setSessionHistory] = useState<
+    Array<{ id: string; title: string; thumbnail: string; playedAt: string; upvotes: number }>
+  >([]);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [copiedTracklist, setCopiedTracklist] = useState(false);
+
   const playerRef = React.useRef<any>(null);
-  const socketRef = React.useRef<WebSocket | null>(null);
-  const broadcasterSyncRef = React.useRef<{
-    state: "PLAYING" | "PAUSED";
-    anchorPositionSec: number;
-    anchorEpochMs: number;
-    localReceivedMs: number;
-  } | null>(null);
 
   const handleReloadPlayer = () => {
     setPlayerKey((k) => k + 1);
@@ -157,6 +169,126 @@ export default function StreamView({
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 3200);
   }, []);
+
+  // Generate QR Code for Party Lounge
+  useEffect(() => {
+    if (typeof window === "undefined" || !creatorId) return;
+    const origin = window.location.origin;
+    const roomUrl = `${origin}/creatorId/${creatorId}`;
+    QRCode.toDataURL(roomUrl, {
+      width: 280,
+      margin: 1.5,
+      color: {
+        dark: "#000000",
+        light: "#ffffff",
+      },
+    }).then(setQrCodeDataUrl).catch(console.error);
+  }, [creatorId]);
+
+  // Escape key closes Party Mode
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setIsPartyMode(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // Load Session History from localStorage
+  useEffect(() => {
+    if (typeof window === "undefined" || !creatorId) return;
+    try {
+      const saved = localStorage.getItem(`muzzi_history_${creatorId}`);
+      if (saved) {
+        setSessionHistory(JSON.parse(saved));
+      }
+    } catch {}
+  }, [creatorId]);
+
+ 
+
+  // YouTube Instant Search API helper
+  const handleSearchYouTube = async (queryText: string) => {
+    const trimmed = queryText.trim();
+    if (!trimmed) {
+      setSearchResults([]);
+      return;
+    }
+    setIsSearching(true);
+    setSearchError("");
+    try {
+      const res = await fetch(`/api/streams/search?q=${encodeURIComponent(trimmed)}`);
+      if (!res.ok) throw new Error("Search failed");
+      const data = await res.json();
+      setSearchResults(data.results || []);
+    } catch {
+      setSearchError("Could not fetch YouTube results. Try pasting the direct link instead.");
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  // 1-Click Queue Track from YouTube Search
+  const handleQueueTrackFromSearch = async (video: { url: string; title: string }) => {
+    setSubmitting(true);
+    try {
+      const response = await fetch("/api/streams", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          creatorId,
+          url: video.url,
+        }),
+      });
+
+      if (!response.ok) {
+        const resData = await response.json().catch(() => ({}));
+        throw new Error(resData.message || "Could not add track.");
+      }
+
+      addToast(`Added "${video.title.slice(0, 26)}..." to queue!`, "success");
+      setSearchQuery("");
+      setSearchResults([]);
+      await refreshStreams();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to add song.";
+      addToast(msg, "error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Copy Tracklist to clipboard
+  const handleCopyTracklist = async () => {
+    if (sessionHistory.length === 0) {
+      addToast("No tracks played in this session yet", "info");
+      return;
+    }
+    const tracklistText = sessionHistory
+      .map((item, idx) => `${idx + 1}. ${item.title} (🔥 ${item.upvotes} votes)`)
+      .join("\n");
+
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(tracklistText);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = tracklistText;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopiedTracklist(true);
+      addToast("Copied session tracklist to clipboard!", "success");
+      setTimeout(() => setCopiedTracklist(false), 2500);
+    } catch {
+      addToast("Failed to copy tracklist", "error");
+    }
+  };
+
 
   // Sorted Queue (Highest upvotes first)
   const sortedQueue = useMemo(() => {
@@ -177,27 +309,29 @@ export default function StreamView({
         const streams = (data.streams || []).sort((a: Video, b: Video) => b.upvotes - a.upvotes);
         setVideoQueue(streams);
 
-        // Sync currently playing stream between creator and audience
+        // Sync stage stream:
         const serverCurrent = data.currentStream || data.activeStream || null;
-        if (serverCurrent) {
-          setCurrentVideoId((prevId) => {
-            if (prevId !== serverCurrent.extractedId) {
-              return serverCurrent.extractedId;
-            }
-            return prevId;
-          });
-          setCurrentVideoTitle((prevTitle) => {
-            if (prevTitle !== serverCurrent.title) {
-              return serverCurrent.title;
-            }
-            return prevTitle;
-          });
-          setCurrentVideoThumbnail(serverCurrent.thumbnail || null);
+        if (share) {
+          // Audience view: strictly sync whatever server reports
+          if (serverCurrent) {
+            setCurrentVideoId(serverCurrent.extractedId);
+            setCurrentVideoTitle(serverCurrent.title);
+            setCurrentVideoThumbnail(serverCurrent.thumbnail || null);
+            setBroadcasterState("PLAYING");
+          } else {
+            setCurrentVideoId(null);
+            setCurrentVideoTitle(null);
+            setCurrentVideoThumbnail(null);
+            setBroadcasterState("PAUSED");
+          }
         } else {
-          // If server reports no active stream, clear stage
-          setCurrentVideoId(null);
-          setCurrentVideoTitle(null);
-          setCurrentVideoThumbnail(null);
+          // Broadcaster view: local player is the authoritative source!
+          // NEVER interrupt or reset an ongoing song when refreshing the queue!
+          if (serverCurrent) {
+            setCurrentVideoId((prevId) => (prevId ? prevId : serverCurrent.extractedId));
+            setCurrentVideoTitle((prevTitle) => (prevTitle ? prevTitle : serverCurrent.title));
+            setCurrentVideoThumbnail((prevThumb) => (prevThumb ? prevThumb : (serverCurrent.thumbnail || null)));
+          }
         }
       }
     } catch (err) {
@@ -205,7 +339,7 @@ export default function StreamView({
     } finally {
       setRefreshing(false);
     }
-  }, [creatorId]);
+  }, [creatorId, share]);
 
   // Stop Playback / Clear Stage (Broadcaster only)
   const handleStopPlayback = useCallback(async () => {
@@ -222,16 +356,6 @@ export default function StreamView({
     }
     addToast("No song is playing currently", "info");
 
-    // Instant WebSocket broadcast so all audience members see "No song is playing currently"
-    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-      socketRef.current.send(
-        JSON.stringify({
-          type: "STAGE_STOPPED",
-          creatorId,
-        })
-      );
-    }
-
     try {
       const res = await fetch("/api/streams/next", {
         method: "DELETE",
@@ -244,7 +368,82 @@ export default function StreamView({
     } catch (err) {
       console.error("Error clearing playback:", err);
     }
-  }, [creatorId, addToast, refreshStreams]);
+  }, [addToast, refreshStreams]);
+
+  // Play Next Song (Streamer only)
+  const handlePlayNext = useCallback(async () => {
+    // Record current track into session history before transitioning
+    if (currentVideoId && currentVideoTitle) {
+      const historyItem = {
+        id: currentVideoId,
+        title: currentVideoTitle,
+        thumbnail: currentVideoThumbnail || `https://img.youtube.com/vi/${currentVideoId}/hqdefault.jpg`,
+        playedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        upvotes: nextVideo ? nextVideo.upvotes : 0,
+      };
+      setSessionHistory((prev) => {
+        const updated = [historyItem, ...prev.filter((h) => h.id !== currentVideoId)].slice(0, 25);
+        try {
+          localStorage.setItem(`muzzi_history_${creatorId}`, JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+    }
+
+    if (!nextVideo) {
+      await handleStopPlayback();
+      return;
+    }
+
+    const targetTrack = nextVideo;
+    setCurrentVideoId(targetTrack.extractedId);
+    setCurrentVideoTitle(targetTrack.title);
+    setCurrentVideoThumbnail(targetTrack.thumbnail);
+    setCreatorIsPlaying(true);
+
+    // If YouTube Player is already active, immediately load and start the new track without waiting for effect
+    if (playerRef.current && typeof playerRef.current.loadVideoById === "function") {
+      loadedVideoIdRef.current = targetTrack.extractedId;
+      try {
+        playerRef.current.loadVideoById({
+          videoId: targetTrack.extractedId,
+          startSeconds: 0,
+        });
+        playerRef.current.playVideo();
+      } catch (e) {
+        console.error("Error switching video in handlePlayNext:", e);
+      }
+    }
+
+    // Optimistically remove from queue
+    setVideoQueue((prev) => prev.filter((v) => v.id !== targetTrack.id));
+    addToast(`Now playing: "${targetTrack.title}"`, "info");
+
+    try {
+      const res = await fetch("/api/streams/next", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ streamId: targetTrack.id }),
+      });
+
+      if (!res.ok) {
+        console.error("Failed to set next stream on server");
+      }
+      await refreshStreams();
+    } catch (err) {
+      console.error("Error playing next stream:", err);
+    }
+  }, [currentVideoId, currentVideoTitle, currentVideoThumbnail, nextVideo, creatorId, handleStopPlayback, addToast, refreshStreams]);
+
+  // Veto / Skip Current Song (Streamer only)
+  const handleSkipTrack = useCallback(async () => {
+    if (sortedQueue.length > 0) {
+      addToast("Skipping to next crowd-voted track...", "info");
+      await handlePlayNext();
+    } else {
+      await handleStopPlayback();
+    }
+  }, [sortedQueue, handlePlayNext, handleStopPlayback, addToast]);
 
   // Handle song completion on creator's end
   const handleSongEnded = useCallback(async () => {
@@ -253,181 +452,44 @@ export default function StreamView({
     addToast("Song completed. No song is playing currently.", "info");
   }, [handleStopPlayback, addToast]);
 
-  useEffect(() => {
-    refreshStreams();
-    // Safety fallback sync every 60s (WebSocket handles instant 0ms real-time updates)
-    const interval = setInterval(refreshStreams, 60000);
-    return () => clearInterval(interval);
-  }, [refreshStreams]);
 
-  // Real-time WebSocket connection for instant synchronization
+  // Smart Polling Effect (Option 2: Zero Extra Services / 100% Free on Vercel)
+  // Polls /api/streams every 2.5s while tab is active, backs off to 15s when hidden, and refreshes immediately on tab focus
   useEffect(() => {
     if (!creatorId) return;
 
-    let socket: WebSocket | null = null;
-    let reconnectTimeout: ReturnType<typeof setTimeout>;
-    let isCleanedUp = false;
-    let retryCount = 0;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let isMounted = true;
 
-    function connect() {
-      if (isCleanedUp) return;
+    const poll = async () => {
+      if (!isMounted) return;
+      await refreshStreams();
+      if (!isMounted) return;
 
-      const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsHost = process.env.NEXT_PUBLIC_WS_HOST || `${window.location.hostname}:3001`;
-      const wsUrl = `${wsProtocol}//${wsHost}`;
+      // Smart interval: 2500ms when tab is active/visible, 15000ms when hidden/backgrounded
+      const interval = typeof document !== "undefined" && document.visibilityState === "visible" ? 2500 : 15000;
+      timeoutId = setTimeout(poll, interval);
+    };
 
-      try {
-        socket = new WebSocket(wsUrl);
-        socketRef.current = socket;
+    // Immediate initial fetch
+    poll();
 
-        socket.onopen = () => {
-          retryCount = 0;
-          if (isCleanedUp) {
-            socket?.close();
-            return;
-          }
-          setWsConnected(true);
-          // Subscribe to this room
-          socket?.send(
-            JSON.stringify({
-              type: "JOIN_ROOM",
-              creatorId,
-            })
-          );
-        };
-
-        socket.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-
-            if (data.type === "ROOM_JOINED" && typeof data.activeViewers === "number") {
-              setActiveViewers(data.activeViewers);
-            }
-
-            if (data.type === "VIEWER_COUNT" && typeof data.count === "number") {
-              setActiveViewers(data.count);
-            }
-
-            if (data.type === "STREAM_ADDED" && data.stream) {
-              setVideoQueue((prev) => {
-                if (prev.some((v) => v.id === data.stream.id)) return prev;
-                return [data.stream, ...prev];
-              });
-              addToast(`New track added: "${data.stream.title.slice(0, 32)}..."`, "info");
-            }
-
-            if (data.type === "VOTE_UPDATE" && data.streamId) {
-              setVideoQueue((prev) =>
-                prev.map((v) => {
-                  if (v.id === data.streamId) {
-                    return { ...v, upvotes: data.upvotes };
-                  }
-                  return v;
-                })
-              );
-            }
-
-            if (data.type === "NOW_PLAYING" && data.currentStream) {
-              setCurrentVideoId(data.currentStream.extractedId);
-              setCurrentVideoTitle(data.currentStream.title);
-              setCurrentVideoThumbnail(data.currentStream.thumbnail || null);
-              setVideoQueue((prev) => prev.filter((v) => v.id !== data.currentStream.id));
-              addToast(`Now playing: "${data.currentStream.title}"`, "info");
-            }
-
-            if (data.type === "STAGE_STOPPED") {
-              setCurrentVideoId(null);
-              setCurrentVideoTitle(null);
-              setCurrentVideoThumbnail(null);
-              setBroadcasterState("PAUSED");
-              if (playerRef.current) {
-                try {
-                  playerRef.current.pauseVideo();
-                  playerRef.current.destroy();
-                } catch {}
-                playerRef.current = null;
-              }
-              addToast("No song is playing currently", "info");
-            }
-
-            if (data.type === "STREAM_DELETED" && data.streamId) {
-              setVideoQueue((prev) => prev.filter((v) => v.id !== data.streamId));
-            }
-
-            // Server-Anchored Epoch Clock Playback Sync
-            if (data.type === "PLAYBACK_SYNC") {
-              const anchorSec = typeof data.anchorPositionSec === "number"
-                ? data.anchorPositionSec
-                : typeof data.currentTime === "number"
-                ? data.currentTime
-                : 0;
-
-              broadcasterSyncRef.current = {
-                state: data.state === "PAUSED" ? "PAUSED" : "PLAYING",
-                anchorPositionSec: anchorSec,
-                anchorEpochMs: data.anchorEpochMs || Date.now(),
-                localReceivedMs: Date.now(),
-              };
-
-              if (share) {
-                setBroadcasterState(data.state);
-
-                if (data.videoId && data.videoId !== currentVideoId) {
-                  setCurrentVideoId(data.videoId);
-                }
-                if (data.title) {
-                  setCurrentVideoTitle(data.title);
-                }
-                if (data.thumbnail) {
-                  setCurrentVideoThumbnail(data.thumbnail);
-                }
-              }
-            }
-          } catch (err) {
-            console.error("Error processing WS event:", err);
-          }
-        };
-
-        socket.onclose = () => {
-          setWsConnected(false);
-          socketRef.current = null;
-          if (!isCleanedUp) {
-            retryCount++;
-            const backoff = Math.min(1000 * Math.pow(1.5, retryCount), 8000);
-            reconnectTimeout = setTimeout(connect, backoff);
-          }
-        };
-
-        socket.onerror = () => {
-          setWsConnected(false);
-        };
-      } catch (err) {
-        setWsConnected(false);
-        socketRef.current = null;
-        if (!isCleanedUp) {
-          retryCount++;
-          const backoff = Math.min(1000 * Math.pow(1.5, retryCount), 8000);
-          reconnectTimeout = setTimeout(connect, backoff);
-        }
+    // Re-sync immediately when user switches back to this tab
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        if (timeoutId) clearTimeout(timeoutId);
+        poll();
       }
-    }
+    };
 
-    connect();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      isCleanedUp = true;
-      clearTimeout(reconnectTimeout);
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(
-          JSON.stringify({
-            type: "LEAVE_ROOM",
-          })
-        );
-        socket.close();
-      }
-      socketRef.current = null;
+      isMounted = false;
+      if (timeoutId) clearTimeout(timeoutId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [creatorId, addToast, share, currentVideoId]);
+  }, [creatorId, refreshStreams]);
 
   // Load YouTube Iframe API once (Broadcaster only)
   useEffect(() => {
@@ -453,6 +515,14 @@ export default function StreamView({
     }
   }, [share]);
 
+  // Stable refs to prevent rebuilding YouTube Player on queue updates, votes, or metadata changes
+  const onSongEndedRef = React.useRef(handleSongEnded);
+  useEffect(() => {
+    onSongEndedRef.current = handleSongEnded;
+  }, [handleSongEnded]);
+
+  const loadedVideoIdRef = React.useRef<string | null>(null);
+
   // YouTube Player instance initialization (Broadcaster ONLY)
   useEffect(() => {
     // Audience view: strictly NEVER instantiate YouTube player or stream live audio/music!
@@ -462,16 +532,36 @@ export default function StreamView({
           playerRef.current.destroy();
         } catch {}
         playerRef.current = null;
+        loadedVideoIdRef.current = null;
       }
       return;
     }
 
     if (!isYTReady || !currentVideoId) {
-      if (playerRef.current) {
+      if (!currentVideoId && playerRef.current) {
         try {
           playerRef.current.destroy();
         } catch {}
         playerRef.current = null;
+        loadedVideoIdRef.current = null;
+      }
+      return;
+    }
+
+    // Guard: If the player already exists, handle video switching seamlessly in-place without rebuilding iframe
+    if (playerRef.current && typeof playerRef.current.loadVideoById === "function") {
+      if (loadedVideoIdRef.current === currentVideoId) {
+        return; // Already playing this exact video. NEVER restart or recreate!
+      }
+      loadedVideoIdRef.current = currentVideoId;
+      try {
+        playerRef.current.loadVideoById({
+          videoId: currentVideoId,
+          startSeconds: 0,
+        });
+        playerRef.current.playVideo();
+      } catch (e) {
+        console.error("Error loading video by ID:", e);
       }
       return;
     }
@@ -507,46 +597,21 @@ export default function StreamView({
           events: {
             onReady: (event: any) => {
               if (!isSubscribed) return;
+              loadedVideoIdRef.current = currentVideoId;
               event.target.playVideo();
             },
             onStateChange: (event: any) => {
               if (!isSubscribed) return;
               const state = event.data;
 
-              // ONLY BROADCASTER broadcasts state changes to viewers!
-              if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-                const currentTime = event.target.getCurrentTime ? event.target.getCurrentTime() : 0;
-
-                if (state === 1) { // PLAYING
-                  setCreatorIsPlaying(true);
-                  socketRef.current.send(
-                    JSON.stringify({
-                      type: "BROADCASTER_SYNC",
-                      creatorId,
-                      state: "PLAYING",
-                      currentTime,
-                      videoId: currentVideoId,
-                      title: currentVideoTitle,
-                      thumbnail: currentVideoThumbnail,
-                    })
-                  );
-                } else if (state === 2) { // PAUSED
-                  setCreatorIsPlaying(false);
-                  socketRef.current.send(
-                    JSON.stringify({
-                      type: "BROADCASTER_SYNC",
-                      creatorId,
-                      state: "PAUSED",
-                      currentTime,
-                      videoId: currentVideoId,
-                      title: currentVideoTitle,
-                      thumbnail: currentVideoThumbnail,
-                    })
-                  );
-                } else if (state === 0) { // ENDED
-                  setCreatorIsPlaying(false);
-                  handleSongEnded();
-                }
+              if (state === 1) { // PLAYING
+                setCreatorIsPlaying(true);
+              } else if (state === 2) { // PAUSED
+                setCreatorIsPlaying(false);
+              } else if (state === 0) { // ENDED
+                setCreatorIsPlaying(false);
+                // Autoplay next track: Always trigger song completion callback
+                onSongEndedRef.current();
               }
             },
           },
@@ -562,41 +627,7 @@ export default function StreamView({
       isSubscribed = false;
       clearTimeout(t);
     };
-  }, [isYTReady, currentVideoId, share, playerKey, creatorId, currentVideoTitle, currentVideoThumbnail, handleSongEnded]);
-
-  // Broadcaster: Low-frequency background anchor recalibration (every 5s)
-  useEffect(() => {
-    if (share || !currentVideoId) return;
-
-    const interval = setInterval(() => {
-      if (
-        playerRef.current &&
-        typeof playerRef.current.getPlayerState === "function" &&
-        socketRef.current &&
-        socketRef.current.readyState === WebSocket.OPEN
-      ) {
-        try {
-          const pState = playerRef.current.getPlayerState();
-          const currentState = pState === 1 ? "PLAYING" : "PAUSED";
-          const currentTime = playerRef.current.getCurrentTime ? playerRef.current.getCurrentTime() : 0;
-          setCreatorIsPlaying(pState === 1);
-          socketRef.current.send(
-            JSON.stringify({
-              type: "BROADCASTER_SYNC",
-              creatorId,
-              state: currentState,
-              currentTime,
-              videoId: currentVideoId,
-              title: currentVideoTitle,
-              thumbnail: currentVideoThumbnail,
-            })
-          );
-        } catch {}
-      }
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [share, currentVideoId, creatorId, currentVideoTitle, currentVideoThumbnail]);
+  }, [isYTReady, currentVideoId, share, playerKey]);
 
   const getYouTubeId = (url: string) => {
     return extractYouTubeId(url);
@@ -704,43 +735,12 @@ export default function StreamView({
         } else {
           addToast("Failed to register vote. Please try again.", "error");
         }
+      } else {
+        refreshStreams();
       }
     } catch {
       setVideoQueue(originalQueue);
       addToast("Network issue while voting.", "error");
-    }
-  };
-
-  // Play Next Song (Streamer only)
-  const handlePlayNext = async () => {
-    if (!nextVideo) {
-      await handleStopPlayback();
-      return;
-    }
-
-    const targetTrack = nextVideo;
-    setCurrentVideoId(targetTrack.extractedId);
-    setCurrentVideoTitle(targetTrack.title);
-    setCurrentVideoThumbnail(targetTrack.thumbnail);
-    setCreatorIsPlaying(true);
-
-    // Optimistically remove from queue
-    setVideoQueue((prev) => prev.filter((v) => v.id !== targetTrack.id));
-    addToast(`Now playing: "${targetTrack.title}"`, "info");
-
-    try {
-      const res = await fetch("/api/streams/next", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ streamId: targetTrack.id }),
-      });
-
-      if (!res.ok) {
-        console.error("Failed to set next stream on server");
-      }
-      await refreshStreams();
-    } catch (err) {
-      console.error("Error playing next stream:", err);
     }
   };
 
@@ -751,7 +751,6 @@ export default function StreamView({
       const pState = typeof playerRef.current.getPlayerState === "function" ? playerRef.current.getPlayerState() : -1;
       const isPlaying = pState === 1;
       const willPlay = !isPlaying;
-      const currentTime = typeof playerRef.current.getCurrentTime === "function" ? playerRef.current.getCurrentTime() : 0;
 
       if (willPlay) {
         playerRef.current.playVideo();
@@ -759,20 +758,6 @@ export default function StreamView({
       } else {
         playerRef.current.pauseVideo();
         setCreatorIsPlaying(false);
-      }
-
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        socketRef.current.send(
-          JSON.stringify({
-            type: "BROADCASTER_SYNC",
-            creatorId,
-            state: willPlay ? "PLAYING" : "PAUSED",
-            currentTime,
-            videoId: currentVideoId,
-            title: currentVideoTitle,
-            thumbnail: currentVideoThumbnail,
-          })
-        );
       }
     } catch (err) {
       console.error("Error toggling play/pause:", err);
@@ -794,6 +779,8 @@ export default function StreamView({
       if (!res.ok) {
         refreshStreams();
         addToast("Could not remove song from server.", "error");
+      } else {
+        refreshStreams();
       }
     } catch {
       refreshStreams();
@@ -802,7 +789,7 @@ export default function StreamView({
   };
 
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 flex flex-col font-sans transition-colors">
+    <div className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 flex flex-col font-sans transition-colors relative">
       <Appbar />
 
       {/* Main Container */}
@@ -837,26 +824,29 @@ export default function StreamView({
 
           {/* Action Pills */}
           <div className="flex items-center gap-2 self-start sm:self-auto">
-            {/* Realtime WebSocket status & Viewer Counter */}
+            {/* Live Polling Sync Indicator */}
             <div className="flex items-center gap-1.5 rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900/60 px-2.5 py-1 text-xs text-zinc-500 dark:text-zinc-400 shadow-sm">
               <span
                 className={`h-2 w-2 rounded-full ${
-                  wsConnected
-                    ? "bg-emerald-500 animate-pulse"
-                    : refreshing
-                    ? "bg-amber-500 animate-spin"
-                    : "bg-zinc-400 dark:bg-zinc-600"
+                  refreshing
+                    ? "bg-emerald-400 ring-2 ring-emerald-400/40"
+                    : "bg-emerald-500 animate-pulse"
                 }`}
               />
               <span className="font-semibold text-zinc-700 dark:text-zinc-300">
-                {wsConnected ? "Realtime Live" : "Fallback 15s"}
+                Live Sync (2s)
               </span>
-              {activeViewers !== null && activeViewers > 0 && (
-                <span className="border-l border-zinc-200 dark:border-zinc-700 pl-1.5 ml-0.5 text-zinc-500 font-mono text-[11px]">
-                  {activeViewers} {activeViewers === 1 ? "viewer" : "viewers"}
-                </span>
-              )}
             </div>
+
+            {/* Party Lounge Mode Toggle */}
+            <button
+              onClick={() => setIsPartyMode(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-semibold text-purple-700 dark:text-purple-300 hover:bg-purple-500/20 transition-all shadow-sm focus:outline-none"
+              title="Open Fullscreen TV Party Lounge with scannable QR Code"
+            >
+              <span>🎉</span>
+              <span className="hidden sm:inline">Party Mode</span>
+            </button>
 
             {/* Share Room Button */}
             <button
@@ -1097,8 +1087,8 @@ export default function StreamView({
 
               {/* Stage Controls Strip (For Creator) */}
               {!share && (
-                <div className="p-4 bg-zinc-50 dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex flex-col sm:flex-row items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 w-full sm:w-auto">
+                <div className="p-4 bg-zinc-50 dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex flex-col xl:flex-row items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
                     <button
                       onClick={handlePlayNext}
                       disabled={sortedQueue.length === 0}
@@ -1137,6 +1127,19 @@ export default function StreamView({
                     )}
                     {currentVideoId && (
                       <button
+                        onClick={handleSkipTrack}
+                        title="Skip to next crowd-voted track (Veto)"
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-xs font-semibold text-zinc-700 hover:text-zinc-950 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-750 transition-colors shadow-sm"
+                      >
+                        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <polygon points="5 4 15 12 5 20 5 4" fill="currentColor" />
+                          <line x1="19" y1="5" x2="19" y2="19" strokeWidth="2.5" />
+                        </svg>
+                        <span>Skip</span>
+                      </button>
+                    )}
+                    {currentVideoId && (
+                      <button
                         onClick={handleStopPlayback}
                         title="Clear current track from stage"
                         className="rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-xs font-medium text-zinc-600 hover:text-red-600 hover:border-red-200 hover:bg-red-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:text-red-400 dark:hover:bg-red-500/10 transition-colors shadow-sm"
@@ -1146,18 +1149,16 @@ export default function StreamView({
                     )}
                   </div>
 
-                  <div className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-3">
-                    <span>
-                      <strong className="text-zinc-900 dark:text-zinc-100 font-semibold">{videoQueue.length}</strong> songs in queue
-                    </span>
-                    {nextVideo && (
-                      <span className="hidden sm:inline border-l border-zinc-300 dark:border-zinc-700 pl-3">
-                        Top vote: <strong className="text-amber-600 dark:text-amber-400 font-mono">{nextVideo.upvotes}</strong>
+                  <div className="flex flex-wrap items-center gap-2 self-start xl:self-auto text-xs">
+                    <div className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-2">
+                      <span>
+                        <strong className="text-zinc-900 dark:text-zinc-100 font-semibold">{videoQueue.length}</strong> songs
                       </span>
-                    )}
+                    </div>
                   </div>
                 </div>
               )}
+
             </div>
 
             {/* Broadcaster Quick Share Card */}
@@ -1184,60 +1185,166 @@ export default function StreamView({
                 </div>
               </div>
             </div>
-
           </div>
 
           {/* RIGHT COLUMN: Song Request & Ranked Voting Queue (5 Columns) */}
           <div className="lg:col-span-5 flex flex-col gap-5">
 
-            {/* Song Submission Form */}
+            {/* Song Submission Form & YouTube Instant Search */}
             <div className="rounded-2xl border border-zinc-200 bg-white p-4.5 dark:border-zinc-800 dark:bg-zinc-900 shadow-sm transition-colors">
-              <div className="flex items-center gap-2 mb-3">
-                <YouTubeIcon />
-                <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-800 dark:text-zinc-200">
-                  Suggest a Track
-                </h2>
+              <div className="flex items-center justify-between gap-2 mb-3 pb-2 border-b border-zinc-200 dark:border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <YouTubeIcon />
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-800 dark:text-zinc-200">
+                    Suggest a Track
+                  </h2>
+                </div>
+
+                {/* Search Mode Tabs */}
+                <div className="flex items-center bg-zinc-100 dark:bg-zinc-800 p-0.5 rounded-lg text-[11px] font-semibold">
+                  <button
+                    type="button"
+                    onClick={() => setSearchTab("search")}
+                    className={`px-2.5 py-1 rounded-md transition-all ${
+                      searchTab === "search"
+                        ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white shadow-sm font-bold"
+                        : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white"
+                    }`}
+                  >
+                    🔍 Search
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSearchTab("url")}
+                    className={`px-2.5 py-1 rounded-md transition-all ${
+                      searchTab === "url"
+                        ? "bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white shadow-sm font-bold"
+                        : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white"
+                    }`}
+                  >
+                    🔗 Link
+                  </button>
+                </div>
               </div>
-              <form onSubmit={handleAddSong} className="space-y-3">
-                <div>
-                  <label htmlFor="youtube-url" className="sr-only">
-                    YouTube URL
-                  </label>
-                  <input
-                    id="youtube-url"
-                    type="url"
-                    value={inputValue}
-                    onChange={(e) => {
-                      setInputValue(e.target.value);
-                      if (error) setError("");
-                    }}
-                    placeholder="Paste YouTube video or song link..."
-                    className="w-full rounded-xl border border-zinc-300 bg-zinc-50 px-3.5 py-2 text-xs sm:text-sm text-zinc-900 placeholder-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder-zinc-600 focus:border-zinc-900 dark:focus:border-zinc-100 focus:outline-none transition-colors"
-                  />
-                  {error && (
-                    <p className="mt-1.5 text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
-                      <svg className="h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                      </svg>
-                      {error}
-                    </p>
+
+              {searchTab === "search" ? (
+                /* Mode 1: Built-in YouTube Search */
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => {
+                        setSearchQuery(e.target.value);
+                        if (searchError) setSearchError("");
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleSearchYouTube(searchQuery);
+                        }
+                      }}
+                      placeholder="Search songs or artists (e.g. 'Daft Punk')..."
+                      className="w-full rounded-xl border border-zinc-300 bg-zinc-50 px-3.5 py-2 text-xs sm:text-sm text-zinc-900 placeholder-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder-zinc-600 focus:border-zinc-900 dark:focus:border-zinc-100 focus:outline-none transition-colors"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleSearchYouTube(searchQuery)}
+                      disabled={isSearching || !searchQuery.trim()}
+                      className="inline-flex items-center justify-center rounded-xl bg-zinc-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95 shadow-sm flex-shrink-0"
+                    >
+                      {isSearching ? (
+                        <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-400 border-t-zinc-900 dark:border-zinc-600 dark:border-t-zinc-100" />
+                      ) : (
+                        <span>Search</span>
+                      )}
+                    </button>
+                  </div>
+
+                  {searchError && (
+                    <p className="text-xs text-red-600 dark:text-red-400">{searchError}</p>
+                  )}
+
+                  {/* Search Results Autocomplete Preview List */}
+                  {searchResults.length > 0 && (
+                    <div className="space-y-2 max-h-64 overflow-y-auto pr-1 pt-1">
+                      {searchResults.map((result) => (
+                        <div
+                          key={result.id}
+                          className="flex items-center justify-between gap-3 p-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-950/40 hover:bg-zinc-100 dark:hover:bg-zinc-800/60 transition-colors"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <img
+                              src={result.thumbnail}
+                              alt=""
+                              className="h-9 w-14 rounded-lg object-cover flex-shrink-0"
+                            />
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 truncate" title={result.title}>
+                                {result.title}
+                              </p>
+                              <p className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate">
+                                {result.channelTitle}
+                              </p>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleQueueTrackFromSearch(result)}
+                            disabled={submitting}
+                            className="inline-flex items-center gap-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-100 dark:hover:bg-white text-white dark:text-zinc-950 px-2.5 py-1 text-xs font-semibold transition-all active:scale-95 shadow-sm flex-shrink-0 disabled:opacity-40"
+                          >
+                            <span>+ Queue</span>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
-                <button
-                  type="submit"
-                  disabled={submitting || !inputValue.trim()}
-                  className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 px-4 py-2.5 text-xs sm:text-sm font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-[0.98] shadow-sm"
-                >
-                  {submitting ? (
-                    <>
-                      <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-400 border-t-zinc-900 dark:border-zinc-600 dark:border-t-zinc-100" />
-                      <span>Adding to Queue...</span>
-                    </>
-                  ) : (
-                    <span>Add to Queue</span>
-                  )}
-                </button>
-              </form>
+              ) : (
+                /* Mode 2: Direct YouTube URL Submission */
+                <form onSubmit={handleAddSong} className="space-y-3">
+                  <div>
+                    <label htmlFor="youtube-url" className="sr-only">
+                      YouTube URL
+                    </label>
+                    <input
+                      id="youtube-url"
+                      type="url"
+                      value={inputValue}
+                      onChange={(e) => {
+                        setInputValue(e.target.value);
+                        if (error) setError("");
+                      }}
+                      placeholder="Paste YouTube video or song link..."
+                      className="w-full rounded-xl border border-zinc-300 bg-zinc-50 px-3.5 py-2 text-xs sm:text-sm text-zinc-900 placeholder-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder-zinc-600 focus:border-zinc-900 dark:focus:border-zinc-100 focus:outline-none transition-colors"
+                    />
+                    {error && (
+                      <p className="mt-1.5 text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+                        <svg className="h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                        </svg>
+                        {error}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={submitting || !inputValue.trim()}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-zinc-900 px-4 py-2.5 text-xs sm:text-sm font-semibold text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-[0.98] shadow-sm"
+                  >
+                    {submitting ? (
+                      <>
+                        <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-400 border-t-zinc-900 dark:border-zinc-600 dark:border-t-zinc-100" />
+                        <span>Adding to Queue...</span>
+                      </>
+                    ) : (
+                      <span>Add to Queue</span>
+                    )}
+                  </button>
+                </form>
+              )}
             </div>
 
             {/* Voting Queue Section */}
@@ -1369,10 +1476,329 @@ export default function StreamView({
               </div>
             </div>
 
+            {/* Session Track History & Export Card */}
+            <div className="rounded-2xl border border-zinc-200 bg-white p-4.5 dark:border-zinc-800 dark:bg-zinc-900 shadow-sm transition-colors">
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => setIsHistoryOpen(!isHistoryOpen)}
+                  className="flex items-center gap-2 text-left group"
+                >
+                  <svg
+                    className={`h-4 w-4 text-zinc-400 group-hover:text-zinc-600 dark:group-hover:text-zinc-200 transition-transform ${
+                      isHistoryOpen ? "rotate-90" : ""
+                    }`}
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-800 dark:text-zinc-200">
+                    Session Track History
+                  </h2>
+                  <span className="rounded-full bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 text-[10px] font-semibold text-zinc-600 dark:text-zinc-300 font-mono">
+                    {sessionHistory.length}
+                  </span>
+                </button>
+
+                {sessionHistory.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleCopyTracklist}
+                    className="inline-flex items-center gap-1 rounded-lg border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-800 px-2.5 py-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-750 transition-colors shadow-sm"
+                    title="Copy full tracklist to clipboard"
+                  >
+                    {copiedTracklist ? <CheckIcon /> : (
+                      <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                    )}
+                    <span>{copiedTracklist ? "Copied" : "Export Setlist"}</span>
+                  </button>
+                )}
+              </div>
+
+              {isHistoryOpen && (
+                <div className="mt-3.5 space-y-2 max-h-56 overflow-y-auto pr-1 border-t border-zinc-200 dark:border-zinc-800 pt-3">
+                  {sessionHistory.length > 0 ? (
+                    sessionHistory.map((item, index) => (
+                      <div
+                        key={`${item.id}-${index}`}
+                        className="flex items-center justify-between gap-3 p-2 rounded-xl bg-zinc-50/70 dark:bg-zinc-950/40 border border-zinc-200/70 dark:border-zinc-800/80"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className="text-[10px] font-mono font-bold text-zinc-400">
+                            #{index + 1}
+                          </span>
+                          <img
+                            src={item.thumbnail}
+                            alt=""
+                            className="h-8 w-12 rounded object-cover flex-shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-zinc-800 dark:text-zinc-200 truncate" title={item.title}>
+                              {item.title}
+                            </p>
+                            <span className="text-[10px] text-zinc-500 font-mono">
+                              Played at {item.playedAt}
+                            </span>
+                          </div>
+                        </div>
+
+                        <a
+                          href={`https://www.youtube.com/watch?v=${item.id}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors flex-shrink-0 p-1"
+                          title="Open on YouTube"
+                        >
+                          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                            <polyline points="15 3 21 3 21 9" />
+                            <line x1="10" y1="14" x2="21" y2="3" />
+                          </svg>
+                        </a>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-xs text-zinc-400 text-center py-4">
+                      No tracks played in this session yet. Songs played will appear here!
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
           </div>
 
         </div>
       </main>
+
+      {/* Fullscreen TV / Party Lounge Mode */}
+      {isPartyMode && (
+        <div className="fixed inset-0 z-50 bg-zinc-950/95 backdrop-blur-2xl flex flex-col p-6 sm:p-10 text-white overflow-hidden animate-in fade-in duration-300">
+          {/* Ambient blurred glow from current track */}
+          {effectiveThumbnail && (
+            <img
+              src={effectiveThumbnail}
+              alt=""
+              aria-hidden="true"
+              className="absolute inset-0 w-full h-full object-cover blur-3xl opacity-25 scale-125 pointer-events-none select-none"
+            />
+          )}
+
+          {/* Lounge Top Navigation Bar */}
+          <div className="relative z-20 flex items-center justify-between border-b border-white/10 pb-5 mb-8">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 shadow-lg shadow-indigo-500/25">
+                <span className="text-xl">🎉</span>
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-lg sm:text-xl font-black tracking-wider uppercase bg-clip-text text-transparent bg-gradient-to-r from-white via-zinc-200 to-zinc-400">
+                    Muzzi Party Lounge
+                  </h1>
+                  <span className="flex items-center gap-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 text-[10px] font-bold text-emerald-400">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    LIVE
+                  </span>
+                </div>
+                <p className="text-xs text-zinc-400">
+                  Interactive Crowd Jukebox & Live Upvoting Screen
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <span className="hidden sm:inline-block rounded-lg bg-zinc-900/80 border border-white/10 px-2.5 py-1 text-xs text-zinc-400 font-mono">
+                Press ESC to exit
+              </span>
+              <button
+                onClick={() => setIsPartyMode(false)}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 px-4 py-2 text-xs sm:text-sm font-semibold text-white transition-all hover:scale-105 active:scale-95"
+              >
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+                <span>Exit Lounge</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Lounge Main Stage Grid */}
+          <div className="relative z-20 flex-1 grid grid-cols-1 lg:grid-cols-12 gap-8 items-center max-w-7xl mx-auto w-full overflow-y-auto pr-1">
+            {/* Left Column: Giant Vinyl Stage & Current Track (7 Cols) */}
+            <div className="lg:col-span-7 flex flex-col items-center text-center p-6 rounded-3xl bg-zinc-900/40 border border-white/10 backdrop-blur-xl shadow-2xl">
+              {/* Spinning Vinyl Record Disc */}
+              <div className="relative mb-6">
+                <div
+                  className={`relative h-56 w-56 sm:h-72 sm:w-72 rounded-full bg-zinc-950 border-4 border-zinc-800 shadow-[0_0_50px_rgba(0,0,0,0.8)] flex items-center justify-center ${
+                    broadcasterState === "PLAYING" ? "animate-spin-slow" : ""
+                  }`}
+                  style={{
+                    backgroundImage:
+                      "radial-gradient(circle, transparent 30%, rgba(255,255,255,0.03) 31%, transparent 33%, rgba(255,255,255,0.04) 50%, transparent 52%, rgba(255,255,255,0.02) 70%, transparent 72%)",
+                  }}
+                >
+                  {/* Album Cover inside vinyl center */}
+                  <div className="relative h-24 w-24 sm:h-32 sm:w-32 rounded-full overflow-hidden border-4 border-zinc-900 shadow-inner">
+                    {effectiveThumbnail ? (
+                      <img
+                        src={effectiveThumbnail}
+                        alt="Vinyl album art"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full bg-indigo-600 flex items-center justify-center text-white">
+                        <YouTubeIcon />
+                      </div>
+                    )}
+                    {/* Vinyl Center Hole */}
+                    <div className="absolute inset-0 m-auto h-4 w-4 rounded-full bg-zinc-950 border-2 border-zinc-600" />
+                  </div>
+                </div>
+
+                {/* Status Dot */}
+                <span
+                  className={`absolute bottom-2 right-2 flex h-5 w-5 items-center justify-center rounded-full border-2 border-zinc-950 ${
+                    broadcasterState === "PLAYING" ? "bg-emerald-500" : "bg-amber-500"
+                  }`}
+                >
+                  {broadcasterState === "PLAYING" && (
+                    <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 animate-ping" />
+                  )}
+                </span>
+              </div>
+
+              {/* Status & Equalizer Bar */}
+              <div className="flex items-center gap-2 mb-3">
+                <span className="rounded-full bg-indigo-500/20 border border-indigo-500/30 px-3 py-1 text-xs font-bold uppercase tracking-wider text-indigo-300">
+                  {broadcasterState === "PLAYING" ? "NOW PLAYING ON STAGE" : "STAGE PAUSED"}
+                </span>
+
+                {broadcasterState === "PLAYING" && (
+                  <div className="flex items-end gap-1 h-4">
+                    <span className="w-1 bg-emerald-400 rounded-full animate-[bounce_0.8s_infinite]" style={{ height: "60%" }} />
+                    <span className="w-1 bg-emerald-400 rounded-full animate-[bounce_0.6s_infinite_0.2s]" style={{ height: "100%" }} />
+                    <span className="w-1 bg-emerald-400 rounded-full animate-[bounce_0.9s_infinite_0.4s]" style={{ height: "40%" }} />
+                    <span className="w-1 bg-emerald-400 rounded-full animate-[bounce_0.7s_infinite_0.1s]" style={{ height: "80%" }} />
+                  </div>
+                )}
+              </div>
+
+              {/* Current Track Title */}
+              <h2 className="text-xl sm:text-2xl font-black text-white max-w-xl line-clamp-2 mb-2 leading-tight">
+                {currentVideoTitle || "Stage is idle — Waiting for songs"}
+              </h2>
+
+              <p className="text-sm text-zinc-400 mb-6">
+                {currentVideoId ? "Audio playing through venue sound system" : "Scan the QR code to submit and upvote tracks"}
+              </p>
+
+            </div>
+
+            {/* Right Column: High-Contrast QR Code & Queue Ticker (5 Cols) */}
+            <div className="lg:col-span-5 flex flex-col gap-6">
+              {/* QR Code Joining Card */}
+              <div className="flex flex-col sm:flex-row items-center gap-5 p-6 rounded-3xl bg-zinc-900/60 border border-white/10 backdrop-blur-xl shadow-2xl">
+                {/* High Contrast QR Code Canvas */}
+                <div className="flex-shrink-0 p-3 bg-white rounded-2xl shadow-xl flex items-center justify-center">
+                  {qrCodeDataUrl ? (
+                    <img
+                      src={qrCodeDataUrl}
+                      alt="Scan QR code to join room"
+                      className="w-36 h-36 sm:w-40 sm:h-40 object-contain rounded-lg"
+                    />
+                  ) : (
+                    <div className="w-36 h-36 sm:w-40 sm:h-40 flex items-center justify-center text-zinc-900 font-bold text-xs">
+                      Generating QR...
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex flex-col text-center sm:text-left">
+                  <span className="inline-flex items-center gap-1.5 self-center sm:self-start rounded-full bg-purple-500/20 border border-purple-500/30 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-purple-300 mb-2">
+                    📱 Phone Jukebox
+                  </span>
+                  <h3 className="text-base sm:text-lg font-bold text-white mb-1">
+                    Scan to Queue Songs
+                  </h3>
+                  <p className="text-xs text-zinc-400 leading-relaxed mb-3">
+                    Point your smartphone camera at the QR code to propose YouTube songs and upvote the queue live!
+                  </p>
+                  <button
+                    onClick={handleShare}
+                    className="inline-flex items-center justify-center sm:justify-start gap-1.5 text-xs text-indigo-400 hover:text-indigo-300 font-medium"
+                  >
+                    <span>{copied ? "Link Copied to Clipboard!" : "Copy joining URL"}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Up Next Queue Ticker */}
+              <div className="p-6 rounded-3xl bg-zinc-900/60 border border-white/10 backdrop-blur-xl shadow-2xl flex flex-col">
+                <div className="flex items-center justify-between pb-3 border-b border-white/10 mb-3">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-300 flex items-center gap-1.5">
+                    <span>Up Next in Queue</span>
+                    <span className="rounded bg-white/10 px-2 py-0.5 text-[10px] text-zinc-400">
+                      {sortedQueue.length}
+                    </span>
+                  </h3>
+                  <span className="text-[11px] text-zinc-500">Ranked by votes</span>
+                </div>
+
+                <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+                  {sortedQueue.length > 0 ? (
+                    sortedQueue.slice(0, 4).map((video, index) => (
+                      <div
+                        key={video.id}
+                        className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-white/5 border border-white/5 hover:border-white/15 transition-colors"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span
+                            className={`flex h-6 w-6 items-center justify-center rounded-lg text-xs font-bold font-mono ${
+                              index === 0
+                                ? "bg-amber-400 text-zinc-950 shadow-sm"
+                                : index === 1
+                                ? "bg-zinc-300 text-zinc-950"
+                                : "bg-zinc-800 text-zinc-400"
+                            }`}
+                          >
+                            #{index + 1}
+                          </span>
+                          <img
+                            src={video.thumbnail || `https://img.youtube.com/vi/${video.extractedId}/hqdefault.jpg`}
+                            alt=""
+                            className="h-9 w-14 rounded-md object-cover flex-shrink-0"
+                          />
+                          <p className="text-xs font-medium text-zinc-200 truncate max-w-[200px]" title={video.title}>
+                            {video.title}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-400/10 border border-amber-400/20 text-amber-300 font-mono text-xs font-bold flex-shrink-0">
+                          <span>🔥</span>
+                          <span>{video.upvotes}</span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-center py-6 text-zinc-500 text-xs">
+                      No songs in queue yet. Scan the code to add one!
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+
 
       {/* Floating In-App Toast Container */}
       <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-sm pointer-events-none">

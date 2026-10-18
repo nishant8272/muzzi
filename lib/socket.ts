@@ -14,6 +14,11 @@ export async function broadcastWs(
 ): Promise<void> {
   if (!creatorId) return;
 
+  // If no WS server is actively configured, gracefully no-op to eliminate serverless delay
+  if (!process.env.WS_INTERNAL_URL && !process.env.WS_SERVER_ACTIVE) {
+    return;
+  }
+
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 1200);
